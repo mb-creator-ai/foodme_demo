@@ -49,7 +49,8 @@ There is no CI pipeline in this repo, and the Docker build skips tests (`-x test
 Run the relevant tests yourself before calling work done.
 
 Use the `writing-unit-tests`, `writing-integration-tests` and `writing-e2e-tests`
-skills when adding tests.
+skills when adding tests. Use the `running-regression-tests` skill when running the
+existing suites. Use the `managing-jira-issues` skill for Jira work.
 
 ## Seeded defects
 
@@ -74,6 +75,22 @@ course. They are exercises, not accidental mistakes.
 - Don't paste secrets into chat, tickets or commits. `application.properties` holds
   hardcoded JWT and internal API keys: don't repeat or reuse them.
 - Jira is project `SCRUM`. Reference the issue key in commit messages.
+
+## Area rules
+
+Read the rule file for an area before changing it. Don't wait for it to load by
+itself: automatic loading isn't reliable in every Claude Code setup, and other agents
+may not support it.
+
+| When you touch | Read |
+|---|---|
+| `apps/backend/**` | `.claude/rules/backend.md` |
+| `apps/web/**` | `.claude/rules/web.md` |
+| `apps/admin/**` | `.claude/rules/admin.md` |
+| Any test file | `.claude/rules/testing.md` |
+
+A file can match more than one row. For example, `apps/web/e2e/**` needs both
+`web.md` and `testing.md`.
 
 ## Known documentation gaps
 
