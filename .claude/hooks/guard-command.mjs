@@ -3,7 +3,7 @@
 // script file, node -e or a command built from variables can still get past it.
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { projectRoot, runGuard, strictest } from './lib.mjs';
+import { isProtectedConfigPath, projectRoot, runGuard, strictest } from './lib.mjs';
 
 const PROTECTED_BRANCHES = new Set(['main', 'master']);
 const GENERATED_DIRECTORIES = new Set(['node_modules', 'dist', 'build', 'playwright-report', 'test-results']);
@@ -18,6 +18,21 @@ const SKIPPED_PREFIXES = new Set([
 const GIT_GLOBAL_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
 const PUSH_OPTIONS_WITH_VALUE = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
 const MAX_DEPTH = 4;
+
+// Commands that may name a protected Claude config file without changing it. Anything
+// else that names one is denied, so an unknown command fails safe.
+const READ_ONLY_COMMANDS = new Set([
+  'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ls', 'dir', 'stat',
+  'file', 'wc', 'sha256sum', 'sha1sum', 'md5sum', 'diff', 'cmp', 'echo', 'printf', 'type',
+  'get-content', 'gc', 'select-string', 'sls', 'get-item', 'gi', 'get-childitem', 'gci',
+  'test-path', 'get-filehash', 'gh', 'node',
+]);
+const READ_ONLY_GIT_COMMANDS = new Set([
+  'add', 'status', 'diff', 'log', 'show', 'ls-files', 'blame', 'check-ignore', 'commit', 'grep',
+  'rev-parse',
+]);
+const PROTECTED_CONFIG_TEXT = /\.claude\/(?:settings(?:\.local)?\.json(?![\w.-])|hooks(?:\/|$|['"`\s)])|[^/'"`\s]*[*?[])/i;
+const CLAUDE_FOLDER = /(?:^|\/)\.claude\/?$/i;
 
 // Every finding here is a deny: in auto mode an ask doesn't stop the command.
 const deny = (reason) => ({ decision: 'deny', reason });
@@ -106,6 +121,18 @@ function tokenize(text, shell) {
     if (quote === "'") {
       if (character === "'") quote = null;
       else addCharacter(character);
+      continue;
+    }
+
+    // Line continuations. stripHereDocuments has already turned \r\n into \n. Bash joins
+    // the two lines, while a PowerShell backtick outside quotes acts as a word break.
+    if (character === '\\' && next === '\n' && shell === 'bash') {
+      index += 1;
+      continue;
+    }
+    if (character === '`' && next === '\n' && shell === 'powershell' && quote === null) {
+      flushToken();
+      index += 1;
       continue;
     }
 
@@ -254,7 +281,7 @@ function checkPush(args, context, cwd) {
     }
     if (PUSH_OPTIONS_WITH_VALUE.has(argument)) {
       index += 1;
-    } else if (/^--(all|branches|mirror)$/.test(argument)) {
+    } else if (/^--(all|branches|mirror|prune)$/.test(argument)) {
       findings.push(deny(`git push ${argument} can update protected branches.`));
     } else if (/^--force(-with-lease|-if-includes)?(=|$)/.test(argument)) {
       force = true;
@@ -274,6 +301,10 @@ function checkPush(args, context, cwd) {
 
   for (const refspec of refspecs) {
     if (refspec.startsWith('+')) force = true;
+    if (refspec.includes('*')) {
+      findings.push(deny('Wildcard refspecs can update protected branches.'));
+      continue;
+    }
     if (refspec.includes('$')) {
       findings.push(deny('The push target contains a variable, so it can\'t be checked.'));
       continue;
@@ -323,35 +354,30 @@ function isSafeDeleteTarget(target, context) {
     && parts.some((part) => GENERATED_DIRECTORIES.has(part));
 }
 
+// Any recursive delete counts, with or without force: rm -r doesn't prompt when there is
+// no terminal, and PowerShell removes a tree with -Recurse alone.
 function checkDelete(name, args, context) {
   let recursive = false;
-  let force = false;
   const targets = [];
 
   for (const argument of args) {
-    const lower = argument.toLowerCase();
-    if (lower === '--recursive') recursive = true;
-    else if (lower === '--force') force = true;
-    else if (/^\/s$/.test(lower)) {
+    const [flag, value] = argument.toLowerCase().split(':'); // -Recurse:$true has a value.
+    if (flag.startsWith('--')) {
+      if (flag.length >= 3 && 'recursive'.startsWith(flag.slice(2))) recursive = true; // GNU allows --rec.
+    } else if (flag === '/s') {
       recursive = true;
-      force = true;
-    } else if (/^\/[qfa]$/.test(lower)) {
+    } else if (/^\/[qfa]$/.test(flag)) {
       continue;
-    } else if (lower.length >= 3 && lower.startsWith('-') && 'recurse'.startsWith(lower.slice(1))) {
-      recursive = true;
-      force = true; // PowerShell removes a tree with -Recurse alone.
-    } else if (lower.length >= 2 && lower.startsWith('-') && 'force'.startsWith(lower.slice(1))) {
-      force = true;
-    } else if (/^-[a-z]+$/.test(lower) && lower.length <= 6 && /^-[rfdvi]+$/.test(lower)) {
-      if (lower.includes('r')) recursive = true;
-      if (lower.includes('f')) force = true;
+    } else if (flag.length >= 3 && flag.startsWith('-') && 'recurse'.startsWith(flag.slice(1))) {
+      if (value !== '$false') recursive = true;
+    } else if (/^-[rfdvi]+$/.test(flag)) {
+      if (flag.includes('r')) recursive = true;
     } else if (!argument.startsWith('-')) {
       targets.push(argument);
     }
   }
 
-  if (context.shell === 'powershell' && recursive) force = true;
-  if (!recursive || !force) return null;
+  if (!recursive) return null;
   if (targets.length > 0 && targets.every((target) => isSafeDeleteTarget(target, context))) return null;
   return deny(`Recursive delete blocked (${name}). Only generated folders inside the repo are allowed: ${[...GENERATED_DIRECTORIES].join(', ')}.`);
 }
@@ -364,12 +390,54 @@ function checkFind(args) {
   return null;
 }
 
+function namesProtectedConfig(token, context) {
+  const slashes = (value) => value.replaceAll('\\', '/');
+  if (PROTECTED_CONFIG_TEXT.test(slashes(token))) return true;
+  if (context.locationUnknown || /[$`%~]/.test(token)) return false;
+  const absolute = path.resolve(context.cwd, toNativePath(token));
+  return isProtectedConfigPath(context.input, absolute)
+    || PROTECTED_CONFIG_TEXT.test(slashes(absolute))
+    || CLAUDE_FOLDER.test(slashes(absolute));
+}
+
+function redirectionTargets(tokens) {
+  const targets = [];
+  tokens.forEach((token, index) => {
+    const redirect = /^\d*&?>>?(.*)$/.exec(token);
+    if (!redirect) return;
+    const target = redirect[1] || tokens[index + 1];
+    if (target !== undefined && !target.startsWith('&')) targets.push(target);
+  });
+  return targets;
+}
+
+function gitSubcommand(args) {
+  let index = 0;
+  while (index < args.length && args[index].startsWith('-')) {
+    index += GIT_GLOBAL_OPTIONS_WITH_VALUE.has(args[index]) ? 2 : 1;
+  }
+  return args[index];
+}
+
+function isReadOnly(name, args) {
+  if (name === 'git') return READ_ONLY_GIT_COMMANDS.has(gitSubcommand(args));
+  if (name === 'sed') return !args.some((argument) => /^(-[a-z]*i|--in-place)/i.test(argument));
+  if (name === 'node') return !args.some((argument) => /^(-e|-p|--eval|--print)/.test(argument));
+  return READ_ONLY_COMMANDS.has(name);
+}
+
+const PROTECTED_CONFIG_REASON = 'Claude settings and hook files must be changed by hand.';
+
 function innerScript(args, flags) {
   const position = args.findIndex((argument) => flags.includes(argument.toLowerCase()));
   return position === -1 ? null : args.slice(position + 1).join(' ');
 }
 
 function checkSegment(segment, context, depth) {
+  if (redirectionTargets(segment.tokens).some((target) => namesProtectedConfig(target, context))) {
+    return deny(PROTECTED_CONFIG_REASON);
+  }
+
   let tokens = withoutPrefixes(withoutRedirections(segment.tokens));
   if (tokens.length === 0) return null;
 
@@ -413,6 +481,10 @@ function checkSegment(segment, context, depth) {
     return checkCommand(args.join(' '), context, context.shell, depth + 1);
   }
 
+  if (!isReadOnly(name, args) && args.some((argument) => namesProtectedConfig(argument, context))) {
+    return deny(PROTECTED_CONFIG_REASON);
+  }
+
   if (name === 'git') return checkGit(args, context);
   if (name === 'gh' && args[0] === 'pr' && args[1] === 'merge') {
     return deny('gh pr merge can deploy to production.');
@@ -444,6 +516,6 @@ runGuard('guard-command', (input) => {
     ? 'powershell'
     : 'bash';
   const root = projectRoot(input);
-  const context = { root, cwd: path.resolve(input.cwd || root), locationUnknown: false, shell };
+  const context = { input, root, cwd: path.resolve(input.cwd || root), locationUnknown: false, shell };
   return checkCommand(command, context, shell, 0);
 });

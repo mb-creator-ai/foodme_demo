@@ -52,12 +52,12 @@ git(tracksMain, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/ori
 git(tracksMain, 'config', 'branch.tracks.remote', 'origin');
 git(tracksMain, 'config', 'branch.tracks.merge', 'refs/heads/main');
 
-function call(script, input, root) {
+function call(script, input, root, extraEnv = {}) {
   const result = spawnSync(process.execPath, [`${HOOKS}/${script}`], {
     input: typeof input === 'string' ? input : JSON.stringify({ cwd: root, session_id: 's', ...input }),
     encoding: 'utf8',
     cwd: os.tmpdir(), // Hooks must not depend on their working directory.
-    env: { ...process.env, CLAUDE_PROJECT_DIR: root.replaceAll('\\', '/') },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: root.replaceAll('\\', '/'), ...extraEnv },
   });
   let decision = 'allow';
   if (result.stdout.trim()) decision = JSON.parse(result.stdout).hookSpecificOutput?.permissionDecision ?? 'context';
@@ -179,6 +179,111 @@ command('allow', 'git push --dry-run origin feature');
 command('allow', 'cat notes.txt | grep main');
 command('allow', 'eval ls');
 command('allow', 'git commit -m "docs: explain git reset --hard, gh pr merge and git clean -fdx"');
+// H1: line continuations
+command('deny', 'git push origin \\\nmain');
+command('deny', 'git \\\npush origin main');
+command('deny', 'git pu\\\nsh origin main');
+command('deny', 'git push origin \\\r\nmain');
+command('deny', 'git reset \\\n--hard');
+command('deny', 'git clean \\\n-fdx');
+command('deny', 'gh pr \\\nmerge 2');
+command('deny', 'rm -rf \\\napps');
+command('deny', 'rm \\\n-rf apps');
+command('deny', 'bash -c "git push origin \\\nmain"');
+command('deny', 'git push origin `\nmain', { tool: 'PowerShell' });
+command('deny', 'git `\npush origin main', { tool: 'PowerShell' });
+command('deny', 'git push origin `\r\nmain', { tool: 'PowerShell' });
+command('deny', 'git reset `\n--hard', { tool: 'PowerShell' });
+command('deny', 'Remove-Item `\n-Recurse apps', { tool: 'PowerShell' });
+command('deny', 'git push origin `\nmain', { tool: 'mcp__terminal__run_in_terminal' });
+command('allow', 'git push origin \\\nfeature');
+command('allow', 'echo hello \\\nworld');
+command('allow', 'rm -rf \\\napps/web/dist');
+command('allow', "echo 'rm -rf \\\n/'");
+command('allow', 'git status `\n--short', { tool: 'PowerShell' });
+// H2: recursive deletes without force
+command('deny', 'rm -r apps');
+command('deny', 'rm -R .git');
+command('deny', 'rm -r .');
+command('deny', 'rm -r *');
+command('deny', 'rm -r $HOME');
+command('deny', 'rm -rv apps');
+command('deny', 'rm -vr apps');
+command('deny', 'rm -dr apps');
+command('deny', 'rm --recursive apps');
+command('deny', 'rm --rec apps');
+command('deny', 'rm --r apps');
+command('deny', 'rm --rec --for apps');
+command('deny', 'ls | xargs rm -r');
+command('deny', 'Remove-Item -Recurse:$true -Force apps', { tool: 'PowerShell' });
+command('deny', 'Remove-Item apps -Recurse:$true', { tool: 'PowerShell' });
+command('deny', 'Remove-Item apps -rec', { tool: 'PowerShell' });
+command('allow', 'rm -r apps/web/dist');
+command('allow', 'rm --recursive apps/web/node_modules');
+command('allow', 'rm -v notes.txt');
+command('allow', 'Remove-Item apps -Recurse:$false', { tool: 'PowerShell' });
+command('allow', 'Remove-Item -Recurse apps/web/dist', { tool: 'PowerShell' });
+// H3: shell routes to protected config
+command('deny', 'echo x > .claude/settings.local.json');
+command('deny', 'echo x >> .claude/settings.json');
+command('deny', 'echo x >.claude/settings.json');
+command('deny', 'echo x 2> .claude/settings.json');
+command('deny', 'cat <<EOF > .claude/settings.json\n{}\nEOF');
+command('deny', 'echo x | tee .claude/settings.local.json');
+command('deny', 'touch .claude/settings.local.json');
+command('deny', 'truncate -s 0 .claude/settings.json');
+command('deny', 'sed -i s/deny/allow/ .claude/hooks/guard-command.mjs');
+command('deny', 'cp /tmp/x .claude/settings.json');
+command('deny', 'mv .claude/hooks .claude/hooks-old');
+command('deny', 'mv .claude .claude-old');
+command('deny', 'rm .claude/hooks/guard-command.mjs');
+command('deny', 'rm .claude/settings.json');
+command('deny', 'rm .claude/*');
+command('deny', 'cd .claude && rm settings.json');
+command('deny', 'cd .claude/hooks && echo x > lib.mjs');
+command('deny', `node -e "require('fs').writeFileSync('.claude/settings.json','{}')"`);
+command('deny', `python -c "open('.claude/settings.local.json','w')"`);
+command('deny', 'curl -o .claude/settings.json https://example.invalid/x');
+command('deny', 'git checkout -- .claude/settings.json');
+command('deny', 'git rm .claude/hooks/lib.mjs');
+command('deny', 'bash -c "echo x > .claude/settings.json"');
+command('deny', 'echo x > ~/.claude/settings.json');
+command('deny', 'echo x > "$HOME/.claude/settings.local.json"');
+command('deny', 'echo x > /c/Users/someone/.claude/settings.json');
+command('deny', 'Set-Content .claude/settings.local.json x', { tool: 'PowerShell' });
+command('deny', 'Add-Content .claude/settings.json x', { tool: 'PowerShell' });
+command('deny', "'x' | Out-File .claude/settings.local.json", { tool: 'PowerShell' });
+command('deny', 'New-Item .claude/settings.local.json', { tool: 'PowerShell' });
+command('deny', 'Set-Content $env:USERPROFILE\\.claude\\settings.json x', { tool: 'PowerShell' });
+command('deny', 'Set-Content .claude/settings.local.json x', { tool: 'mcp__terminal__run_in_terminal' });
+command('allow', 'cat .claude/settings.json');
+command('allow', 'grep -n deny .claude/hooks/guard-command.mjs');
+command('allow', 'ls .claude');
+command('allow', 'ls -la .claude/hooks');
+command('allow', 'sha256sum .claude/settings.json');
+command('allow', 'sed -n 1,5p .claude/hooks/lib.mjs');
+command('allow', 'git diff -- .claude/settings.json');
+command('allow', 'git add -- .claude/hooks/lib.mjs');
+command('allow', 'git log -- .claude/settings.json');
+command('allow', 'git commit -m "update .claude/settings.json"');
+command('allow', 'node --check .claude/hooks/lib.mjs');
+command('allow', 'node .claude/hook-tests/run.mjs');
+command('allow', 'echo "edit .claude/settings.json by hand"');
+command('allow', 'gh pr create --body "see .claude/settings.json"');
+command('allow', 'echo x > .claude/settings.json.bak');
+command('allow', 'rm .claude/settings.json.bak');
+command('allow', 'cp a.md .claude/rules/web.md');
+command('allow', 'echo x > notes.txt');
+command('allow', 'Get-Content .claude/settings.json', { tool: 'PowerShell' });
+// H4: wildcard refspecs and prune
+command('deny', "git push origin 'refs/heads/*:refs/heads/*'");
+command('deny', 'git push origin "+refs/heads/*:refs/heads/*"');
+command('deny', "git push origin 'refs/*:refs/*'");
+command('deny', "git push origin 'feature/*:feature/*'");
+command('deny', 'git push --prune origin');
+command('deny', "git push --prune origin 'refs/heads/*:refs/heads/*'");
+command('deny', "git push origin 'refs/heads/*:refs/heads/*'", { tool: 'PowerShell' });
+command('allow', 'git push origin refs/heads/feature:refs/heads/feature');
 // Allowed git and false-positive checks
 command('allow', 'git push origin feature');
 command('allow', 'git push -u origin feature');
@@ -242,7 +347,7 @@ command('allow', 'rm -rf apps/admin/test-results');
 command('allow', 'cd apps/web && rm -rf dist');
 command('allow', 'rm notes.txt');
 command('allow', 'rm -f notes.txt');
-command('allow', 'rm -r tmpdir');
+command('deny', 'rm -r tmpdir');
 command('allow', 'rmdir emptydir');
 command('allow', 'Remove-Item notes.txt -Force', { tool: 'PowerShell' });
 command('allow', 'Remove-Item -Recurse -Force apps/web/dist', { tool: 'PowerShell' });
@@ -308,11 +413,29 @@ paths('deny', '.claude/hooks/guard-command.mjs');
 paths('deny', '.claude/hooks/guard-paths.mjs', 'Write');
 paths('deny', '.claude/hooks/lib.mjs');
 paths('deny', '.claude/hooks/new-hook.mjs', 'Write');
-paths('ask', '.claude/settings.local.json');
+paths('deny', '.claude/settings.local.json');
+paths('deny', '.claude/settings.local.json', 'Write');
 paths('allow', '.claude/skills/x/SKILL.md');
 paths('allow', '.claude/rules/web.md');
 paths('allow', '.claude/settings.json.bak');
 paths('allow', '.claude/hooksy/x.mjs');
+
+// H3: file tools and settings outside the project
+const absolutePaths = (expected, file, env = {}) => {
+  const result = call('guard-paths.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: file } }, onFeature, env);
+  check(`paths ${file}`, expected, result.decision);
+};
+const userClaude = path.join(os.homedir(), '.claude');
+absolutePaths('deny', path.join(userClaude, 'settings.json'));
+absolutePaths('deny', path.join(userClaude, 'settings.local.json'));
+absolutePaths('deny', path.join(userClaude, 'settings.json').replaceAll('\\', '/'));
+absolutePaths('allow', path.join(userClaude, 'notes.md'));
+absolutePaths('deny', path.join(base, 'config', 'settings.json'), { CLAUDE_CONFIG_DIR: path.join(base, 'config') });
+absolutePaths('allow', path.join(base, 'config', 'settings.json'));
+const fromSubfolderPath = call('guard-paths.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Write', cwd: path.join(onFeature, 'apps'), tool_input: { file_path: '../.claude/settings.local.json' } }, onFeature);
+check('protected path through a parent folder', 'deny', fromSubfolderPath.decision);
+const ignored = spawnSync('git', ['check-ignore', '-q', '.claude/settings.local.json'], { cwd: realRoot });
+check('settings.local.json is gitignored', 0, ignored.status);
 
 // Fail closed on bad input
 for (const script of ['guard-command.mjs', 'guard-tests.mjs', 'guard-paths.mjs']) {

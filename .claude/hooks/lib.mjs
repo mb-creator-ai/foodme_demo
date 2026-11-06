@@ -1,5 +1,6 @@
 // Shared helpers for the FoodMe Claude Code hooks. Node standard library only.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const LOG_COMMAND_LIMIT = 300;
@@ -29,6 +30,24 @@ export function repoPath(input, filePath) {
   const relative = path.relative(projectRoot(input), absolutePath(input, filePath));
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null;
   return relative.split(path.sep).join('/');
+}
+
+// True for files that can change or switch off these hooks: Claude settings in the
+// project or the user's config folder, and the project's hook scripts.
+export function isProtectedConfigPath(input, absolute) {
+  const comparable = (value) => {
+    const resolved = path.resolve(value);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  const target = comparable(absolute);
+  const projectClaude = path.join(projectRoot(input), '.claude');
+  const settingsFolders = [projectClaude, path.join(os.homedir(), '.claude')];
+  if (process.env.CLAUDE_CONFIG_DIR) settingsFolders.push(process.env.CLAUDE_CONFIG_DIR);
+
+  const isSettings = settingsFolders.some((folder) => ['settings.json', 'settings.local.json']
+    .some((name) => comparable(path.join(folder, name)) === target));
+  const hooks = comparable(path.join(projectClaude, 'hooks'));
+  return isSettings || target === hooks || target.startsWith(`${hooks}${path.sep}`);
 }
 
 export function normalizeNewlines(text) {
