@@ -51,6 +51,9 @@ blob-report/
 Thumbs.db
 desktop.ini
 
+# --- Claude Code ----------------------------------------------------------
+.claude/logs/
+
 # --- Jenkins / infra runtime data -----------------------------------------
 infra/**/data/
 
