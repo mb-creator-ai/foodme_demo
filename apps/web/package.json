@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:unit": "vitest run src/tests",
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "test:e2e:all": "npm run test:e2e && npm --prefix ../admin run test:e2e"
@@ -45,6 +46,7 @@
     "oxlint": "^1.79.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^5.1.0"
   }
 }
