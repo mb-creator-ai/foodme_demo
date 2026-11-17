@@ -66,7 +66,7 @@ test("dish modal additions raise cart line price", async ({ page }) => {
 
   await page.goto(`/chef/${chefId}`);
   const dishBtn = page.locator("button.dc_card").filter({ hasText: dishName! }).first();
-  await dishBtn.scrollIntoViewIfNeeded();
+  await expect(dishBtn).toBeVisible({ timeout: 15000 });
   await dishBtn.click();
 
   await expect(page.getByRole("heading", { name: "Additions" })).toBeVisible();
