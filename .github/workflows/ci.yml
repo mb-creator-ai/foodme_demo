@@ -1,0 +1,123 @@
+name: FoodMe CI
+
+on:
+  pull_request:
+    branches:
+      - main
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Run Unit Tests
+        working-directory: apps/web
+        run: npm run test:unit
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Run Integration Tests
+        working-directory: apps/web
+        run: npx vitest run src/integration  
+  
+  e2e-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: foodme
+          POSTGRES_USER: foodme
+          POSTGRES_PASSWORD: foodme
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U foodme -d foodme"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Web dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Install Admin dependencies
+        working-directory: apps/admin
+        run: npm ci
+
+      - name: Build Admin
+        working-directory: apps/admin
+        run: npm run build
+      - name: Copy Admin build to Backend
+        run: |
+          mkdir -p apps/backend/src/main/resources/static/backoffice
+          cp -r apps/admin/dist/. apps/backend/src/main/resources/static/backoffice/
+      - name: Install Playwright browsers
+        working-directory: apps/web
+        run: npx playwright install --with-deps
+
+      - name: Install Admin Playwright browsers
+        working-directory: apps/admin
+        run: npx playwright install --with-deps
+
+      - name: Start Backend
+        working-directory: apps/backend
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/foodme
+          DB_USER: foodme
+          DB_PASSWORD: foodme
+        run: |
+          chmod +x ./gradlew
+          nohup ./gradlew bootRun --no-daemon > backend.log 2>&1 &
+          timeout 120 bash -c 'until curl -fsS http://localhost:8081/actuator/health; do sleep 5; done'
+
+      - name: Run E2E tests
+        working-directory: apps/web
+        run: npm run test:e2e:all
+
+  qodana:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Qodana Scan
+        uses: JetBrains/qodana-action@v2026.2
+        env:
+          QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_1672444013 }}
