@@ -84,7 +84,10 @@ jobs:
       - name: Build Admin
         working-directory: apps/admin
         run: npm run build
-
+      - name: Copy Admin build to Backend
+        run: |
+          mkdir -p apps/backend/src/main/resources/static/backoffice
+          cp -r apps/admin/dist/. apps/backend/src/main/resources/static/backoffice/
       - name: Install Playwright browsers
         working-directory: apps/web
         run: npx playwright install --with-deps
