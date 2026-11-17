@@ -81,6 +81,10 @@ jobs:
         working-directory: apps/admin
         run: npm ci
 
+      - name: Build Admin
+        working-directory: apps/admin
+        run: npm run build
+
       - name: Install Playwright browsers
         working-directory: apps/web
         run: npx playwright install --with-deps
@@ -99,6 +103,7 @@ jobs:
       - name: Run E2E tests
         working-directory: apps/web
         run: npm run test:e2e:all
+
   qodana:
     runs-on: ubuntu-latest
     steps:
