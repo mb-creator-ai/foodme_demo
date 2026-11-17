@@ -92,6 +92,10 @@ jobs:
         working-directory: apps/web
         run: npx playwright install --with-deps
 
+      - name: Install Admin Playwright browsers
+        working-directory: apps/admin
+        run: npx playwright install --with-deps
+
       - name: Start Backend
         working-directory: apps/backend
         env:
